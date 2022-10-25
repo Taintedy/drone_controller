@@ -33,7 +33,7 @@ class DronSimEnv(Env):
         self.state = self.ros_node.state
         # Reduce shower length by 1 second
         duration = rospy.get_time() - self.start_time
-        print(duration)
+        # print(duration)
         # Calculate reward
         reward = -(np.linalg.norm(self.state[:3] - self.ros_node.target_pose))**2
         
