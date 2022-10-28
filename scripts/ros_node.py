@@ -12,6 +12,9 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecFrameStack
 from stable_baselines3.common.evaluation import evaluate_policy
 
+from vel_controller import MPC
+
+
 class RosConnector():
 
     def __init__(self) -> None:
@@ -45,8 +48,9 @@ class RosConnector():
 
     def publish_velocity(self, cmd):
         vel = Twist()
-        vel.linear.x = float(cmd[0])
-        vel.linear.y = float(cmd[1])
+        
+        vel.linear.x = cmd[0]
+        vel.linear.y = cmd[1]
         vel.linear.z = 0
         self.cmd_vel_pub.publish(vel)
     
@@ -65,14 +69,17 @@ if __name__ == "__main__":
         rospy.logwarn("working")
         rate = rospy.Rate(10)
         ros_node = RosConnector()
-        model = PPO.load("PPO", device='cpu')
+        # model = PPO.load("PPO", device='cpu')
         while not rospy.is_shutdown():
             rospy.wait_for_message("/drone_state", Odometry)
-            state = np.array([ros_node.state[0], ros_node.state[1]])
-            target = np.array([ros_node.target_pose[0], ros_node.target_pose[1]])
-            obs = target - state
-            action = model.predict(obs)
-            ros_node.publish_velocity(np.asarray(action)[0])
+            mpc_controller = MPC()
+            state = np.array([ros_node.state[0], ros_node.state[1], ros_node.state[2]])
+            target = np.array([ros_node.target_pose[0], ros_node.target_pose[1], ros_node.target_pose[2]])
+            vel = mpc_controller.get_control(state, target).reshape((3,1))
+
+            # obs = target - state
+            # action = model.predict(obs)
+            ros_node.publish_velocity(vel)
         rospy.spin()
         
     except rospy.ROSInterruptException:

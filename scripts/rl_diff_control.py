@@ -116,23 +116,52 @@ if __name__ == "__main__":
             gamma=0.99,
             gae_lambda=0.925,
             vf_coef=0.5,
-            max_grad_norm=0.7
+            max_grad_norm=0.7,
+            tensorboard_log="./PPO_Logs/"
             )
         timesteps = 100000
-        model.learn(timesteps, progress_bar=True)
+        model.learn(timesteps, progress_bar=True, tb_log_name="first_run")
         model.save('PPO')
+
+
+        env = DronSimEnv()
+        model = PPO.load("PPO", env=env, device='cpu')
+        dists = []
+        scores = []
+        episodes = 20
+        obs = env.reset()
+        for episode in range(1, episodes+1):
+            state = env.reset()
+            done = False
+            score = 0 
+            print(state)
+            while not done:
+                action, _states = model.predict(state)
+                n_state, reward, done, info = env.step(action)
+                score+=reward
+            print(n_state)
+            print(np.linalg.norm(n_state))
+            dists.append(np.linalg.norm(n_state))
+            scores.append(score)
+            print('Episode:{} Score:{}'.format(episode, score))
         
+        avg_dist = sum(dists)/len(dists)
+        passed_test = sum([1 for i in dists if i <= thresh ])/episode
+        print(f"avg_dist = {avg_dist} var = {np.var(dists) ** 0.5}")
+        print(f"avg_score = {sum(scores)/len(scores)} var = {np.var(scores)** 0.5}")
+        print(f"passed test: {passed_test}")
 
         avg_dist = 100
         learning_rate = 8.75e-06
         timesteps = 100000
         clip_range=0.1
+        i = 1
         while avg_dist >= 0.1:
             
-
+            i += 1
             env = DummyVecEnv([make_env(i) for i in range(num_cpu)])
             model = PPO.load("PPO", env=env, device="cpu", custom_objects={ 'learning_rate': learning_rate, "ent_coef":0, "clip_range":clip_range})
-            model.learn(timesteps, progress_bar=True)
+            model.learn(timesteps, progress_bar=True, tb_log_name=f"{i}_run")
             model.save('PPO')
             env = DronSimEnv()
             model = PPO.load("PPO", env=env, device='cpu')
