@@ -1,139 +1,109 @@
-#!/usr/bin/env python3
-import rospy
-import numpy as np
-from geometry_msgs.msg import Twist, Pose
-from nav_msgs.msg import Odometry
-from std_msgs.msg import Bool
-import gym 
 from gym import Env
 from gym.spaces import Box 
 import numpy as np
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import VecFrameStack
+from stable_baselines3 import A2C
+from stable_baselines3.a2c.policies import MlpPolicy
 from stable_baselines3.common.evaluation import evaluate_policy
+import torch as th
+from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.sb2_compat.rmsprop_tf_like import RMSpropTFLike
+from typing import Callable
 
+
+
+def schedule(initial_value: float) -> Callable[[float], float]:
+    def func(progress_remaining: float) -> float:
+        return progress_remaining * initial_value
+
+    return func
 
 class DronSimEnv(Env):
     def __init__(self):
-        # Actions we can take, down, stay, up
-        self.ros_node = RosConnector()
-        self.action_space = Box(low=-1, high=1, shape=(3,))
-        # Temperature array
-        self.observation_space = Box(low=float('-inf'), high=float('inf'), shape=(6,))
-        # Set start temp
-        self.state = self.ros_node.state
-        # Set shower length
-        self.start_time = rospy.get_time()
-        self.episod_duration = 5
+        super(DronSimEnv, self).__init__()
+
+        self.action_space = Box(low=-1, high=1, shape=(2,))
+        self.observation_space = Box(low=-20, high=20, shape=(4,), dtype=np.float64)
+        
+        self.drone_state = np.array([0, 0])
+        self.target = np.array ([10, 10])
+
+        self.state = np.concatenate((self.drone_state, self.target))
+        
+        self.episode_duration = 100
+        self.time_left = self.episode_duration
+        self.alive_reward = 0
+        self.action_penality = 1
+        self.pose_penality = 1
         
     def step(self, action):
-        # Apply action
-        # print(f"episode len left {self.episode_len}")
-        self.ros_node.publish_velocity(action) 
-        self.state = self.ros_node.state
-        # Reduce shower length by 1 second
-        duration = rospy.get_time() - self.start_time
-        # print(duration)
-        # Calculate reward
-        reward = -(np.linalg.norm(self.state[:3] - self.ros_node.target_pose))**2
+
+        dt = 0.1
+        self.drone_state = np.array([ 
+            np.clip(self.drone_state[0] + action[0] * dt, -20, 20),
+            np.clip(self.drone_state[1] + action[1] * dt, -20, 20)])
         
-        # Check if shower is done
-        if self.episod_duration <= duration or self.ros_node.is_collision: 
+
+
+        self.state = np.concatenate((self.drone_state, self.target))
+
+
+
+        self.time_left -= 0.1
+
+        reward = self.alive_reward - self.action_penality * np.linalg.norm(action)**2 - self.pose_penality * np.linalg.norm(self.target - self.drone_state) ** 2
+        # print(np.linalg.norm(self.target - self.drone_state))
+        if self.time_left <= 0:
             done = True
         else:
             done = False
-        
-        # Apply temperature noise
-        #self.state += random.randint(-1,1)
-        # Set placeholder for info
+
         info = {}
-        
-        # Return step information
-        return self.state, reward, done, info
+        return self.state, 10**(-5) * reward, done, info
 
     def render(self):
-        # Implement viz
         pass
     
     def reset(self):
-        # Reset shower temperature
-        self.ros_node.publish_restart(True)
-        self.state = self.ros_node.state
-        self.ros_node.is_collision = False
-        # Reset shower time
-        self.start_time = rospy.get_time()
+        self.drone_state = np.array([0, 0])
+        self.target = np.array ([10, 10])
+        self.state = np.concatenate((self.drone_state, self.target))
+        self.time_left = self.episode_duration
         return self.state
 
-class RosConnector():
-
-    def __init__(self) -> None:
-        self.state = np.zeros(6)
-        self.target_pose = np.zeros(3)
-        self.is_collision = False
-        #subscribers
-        rospy.Subscriber("/drone_state", Odometry, self.callback_state, queue_size=10)
-        rospy.Subscriber("/target_pose", Pose, self.callback_target_pose, queue_size=10)
-        rospy.Subscriber("/collision_detection", Bool, self.callback_collision, queue_size=10)
-        #publishers
-        self.cmd_vel_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=10)
-        self.cmd_restart = rospy.Publisher("/restart_request", Bool, queue_size=10)
-        #services
-
-    def callback_state(self, msg):
-        self.state = np.array([
-            msg.pose.pose.position.x,
-            msg.pose.pose.position.y,
-            msg.pose.pose.position.z,
-            msg.twist.twist.linear.x,
-            msg.twist.twist.linear.y,
-            msg.twist.twist.linear.z
-        ])
-
-    def callback_collision(self, msg):
-        self.is_collision = True
-
-    def callback_target_pose(self, msg):
-        self.target_pose = np.array([msg.position.x, msg.position.y, msg.position.z])
-
-    def publish_velocity(self, cmd):
-        vel = Twist()
-        vel.linear.x = cmd[0]
-        vel.linear.y = cmd[1]
-        vel.linear.z = cmd[2]
-        self.cmd_vel_pub.publish(vel)
-    
-    def publish_restart(self, cmd):
-        self.cmd_restart.publish(cmd)
-        
-
-
-def shutdown():
-    rospy.logwarn("shutting down")
 
 if __name__ == "__main__":
-    try:
-        rospy.on_shutdown(shutdown)
-        rospy.init_node('mission_execution_node', anonymous=True)
-        rospy.logwarn("working")
-        rate = rospy.Rate(10)
+        # log_dir = "tmp/"
+        # os.makedirs(log_dir, exist_ok=True)
         env = DronSimEnv()
-        model = PPO("MlpPolicy", env, verbose=1)
-        model.learn(total_timesteps=5000000)
-        model.save('PPO')
-        # episodes = 5
-        # for episode in range(1, episodes+1):
-        #     state = env.reset()
-        #     done = False
-        #     score = 0 
-        #     while not done:
-        #         # print("in while loop")
-        #         action = env.action_space.sample()
-        #         n_state, reward, done, info = env.step(action)
-        #         score+=reward
-        #     print('Episode:{} Score:{}'.format(episode, score))
-        rospy.spin()
+        check_env(env)
+        policy_kwargs = dict(activation_fn=th.nn.LeakyReLU, net_arch=[256, dict(pi=[128, 64, 16], vf=[128, 128])], optimizer_class=RMSpropTFLike, optimizer_kwargs=dict(eps=1e-5))
+
+        model = A2C(MlpPolicy, env, learning_rate=schedule(0.01), use_sde=False, verbose=1, tensorboard_log="A2C_LOG", policy_kwargs=policy_kwargs, gamma=0.9, device="cpu")
+
+        # model.set_parameters("A2C", exact_match=True)
+        # # model = PPO.load("PPO", device='cpu')
+        # callback = SaveOnBestTrainingRewardCallback(check_freq=10, log_dir=log_dir)
+        timesteps = 1000000
+        model.learn(timesteps, progress_bar=True)
+        # plot_results([log_dir], timesteps, results_plotter.X_TIMESTEPS, "A2C drone")
+        # plt.show()
+        model.save('A2C')
+
+
+        mean_reward, std_reward = evaluate_policy(model, model.get_env(), n_eval_episodes=5)
+        print(mean_reward, std_reward)
         
-    except rospy.ROSInterruptException:
-        pass
+        episodes = 3
+        obs = env.reset()
+        for episode in range(1, episodes+1):
+            state = env.reset()
+            done = False
+            score = 0 
+            while not done:
+                action, _states = model.predict(state)
+                n_state, reward, done, info = env.step(action)
+                score+=reward
+                print(n_state)
+            print('Episode:{} Score:{}'.format(episode, score))
 
 
